@@ -18,6 +18,33 @@ import generateBackgroundExamples
 random.seed(42)
 np.random.seed(42)
 
+def generate_trig_sequence(x, n_terms):
+    """
+    Generates sin(nx) and cos(nx) for n = 0 to n_terms-1 
+    using the three-term recurrence relation.
+    """    
+    cos_vals = np.zeros(n_terms) #[0.0] * n_terms
+    sin_vals = np.zeros(n_terms) #[0.0] * n_terms
+    cos_vals[0] = 1.0
+            
+    # Values for n=1
+    cos_vals[1] = np.cos(x)
+    sin_vals[1] = np.sin(x)
+    
+    # The multiplier k = 2*cos(x)
+    k = 2.0 * cos_vals[1]
+    
+    for n in range(2, n_terms):
+        # Recurrence: f(n) = 2*cos(x)*f(n-1) - f(n-2)
+        c_next = k * cos_vals[n-1] - cos_vals[n-2]
+        s_next = k * sin_vals[n-1] - sin_vals[n-2]        
+        # Re-normalization to prevent numerical drift
+        # This keeps (sin^2 + cos^2) exactly 1.0
+        s = 1.0 / np.sqrt(c_next*c_next + s_next*s_next)
+        cos_vals[n] = c_next * s
+        sin_vals[n] = s_next * s
+        
+    return cos_vals, sin_vals
 
 ##############################################
 # AmbiScaper settings
@@ -89,7 +116,7 @@ for scene_idx in range(num_scenes):
     start_time = time.time()
     ambiscaper = AmbiScaper(duration=soundscape_duration,
                             ambisonics_order=ambisonics_order,
-                            fg_path=samples_folder,
+                            fg_path=fg_folder,
                             bg_path=bg_folder)
 
     # Configure reference level ref_db, 
@@ -108,7 +135,7 @@ for scene_idx in range(num_scenes):
     #ambiscaper.add_background(source_file=('const', 'test.wav'), source_time=('const', 0))
     
     ambiscaper.add_background(source_file=('choose', []), 
-                              source_time=('const', 0),
+                              source_time=('uniform', 0.0, 120.0),
                               event_azimuth=('uniform', 0, 2 * np.pi))
     
 
@@ -200,53 +227,47 @@ for scene_idx in range(num_scenes):
             yaw = ht_data_trunc[i, 0] * np.pi
             pitch = ht_data_trunc[i, 1] * np.pi
             roll = ht_data_trunc[i, 2] * np.pi 
-            output_signal[i:i+frame_length,2] = ht_data_trunc[i, 0]                               
-            output_signal[i:i+frame_length,3] = ht_data_trunc[i, 1]            
-            output_signal[i:i+frame_length,4] = ht_data_trunc[i, 2]
+            output_signal[i:i+frame_length,2:5] = ht_data_trunc[i, :]                                           
             mtx = spa.sph.sh_rotation_matrix(ambisonics_order, yaw, pitch, roll, sh_type='real').T  
             ambi_data_rot[i:i+frame_length,:] += (ambi_data[i:i+frame_length,:]*w) @ mtx       
             # TODO: fade with overlap-add to avoid occasional zipper noise artifacts at frame boundaries      
     else: #yaw rotation only, much faster to compute mtx   
         for i in np.arange(0, min_length-frame_length, hopsize).tolist():   
             yaw = ht_data_trunc[i, 0] * np.pi  
-            output_signal[i:i+frame_length,2] = ht_data_trunc[i, 0]                                        
-            if ambisonics_order>0:
-                cosYaw = np.cos(yaw)
-                sinYaw = np.sin(yaw)
-                mtx[1,1] = cosYaw
-                mtx[3,3] = cosYaw
-                mtx[1,3] = sinYaw
-                mtx[3,1] = -sinYaw
-            if ambisonics_order>1:
-                cos2Yaw = np.cos(2*yaw)
-                sin2Yaw = np.sin(2*yaw)
-                mtx[4,4] = cos2Yaw
-                mtx[8,8] = cos2Yaw
-                mtx[4,8] = sin2Yaw
-                mtx[8,4] = -sin2Yaw
+            output_signal[i:i+frame_length,2] = ht_data_trunc[i, 0]  
+            cos_seq, sin_seq = generate_trig_sequence(yaw, ambisonics_order+1)   
+            if ambisonics_order>0:                
+                mtx[1,1] = cos_seq[1]
+                mtx[3,3] = cos_seq[1]
+                mtx[1,3] = sin_seq[1]
+                mtx[3,1] = -sin_seq[1]
+            if ambisonics_order>1:                
+                mtx[4,4] = cos_seq[2]
+                mtx[8,8] = cos_seq[2]
+                mtx[4,8] = sin_seq[2]
+                mtx[8,4] = -sin_seq[2]
                 mtx[5:8,5:8] = mtx[1:4,1:4]
-            if ambisonics_order>2:
-                cos3Yaw = np.cos(3*yaw)
-                sin3Yaw = np.sin(3*yaw)
-                mtx[9,9] = cos3Yaw
-                mtx[15,15] = cos3Yaw
-                mtx[ 9,15] = sin3Yaw
-                mtx[15, 9] = -sin3Yaw
+            if ambisonics_order>2:                
+                mtx[9,9] = cos_seq[3] #np.cos(3*yaw)
+                mtx[15,15] = mtx[9,9] 
+                mtx[ 9,15] = sin_seq[3] #np.sin(3*yaw)
+                mtx[15, 9] = -mtx[ 9,15]
                 mtx[10:15,10:15] = mtx[4:9,4:9]
-            if ambisonics_order>3:
-                cos4Yaw = np.cos(4*yaw)
-                sin4Yaw = np.sin(4*yaw)
-                mtx[16,16] = cos4Yaw
-                mtx[24,24] = cos4Yaw
-                mtx[16,24] = sin4Yaw
-                mtx[24,16] = -sin4Yaw
+            if ambisonics_order>3:                
+                mtx[16,16] = cos_seq[4] #np.cos(4*yaw)
+                mtx[24,24] = mtx[16,16]
+                mtx[16,24] = sin_seq[4]# np.sin(4*yaw)
+                mtx[24,16] = -mtx[16,24]
                 mtx[17:24,17:24] = mtx[9:16,9:16]
-            if ambisonics_order>4:
-                mtx[25,25] =  np.cos(5*yaw)
+            if ambisonics_order>4:                
+                mtx[25,25] =  cos_seq[5] #np.cos(5*yaw)
                 mtx[35,35] =  mtx[25,25]
-                mtx[25,35] =  np.sin(5*yaw)
+                mtx[25,35] =  sin_seq[5] #np.sin(5*yaw)
                 mtx[35,25] =  -mtx[25,35]
                 mtx[26:35,26:35] = mtx[16:25,16:25]              
+            if ambisonics_order>5:                
+                #fallback to general (slower) rotation matrix computation for order>5
+                mtx = spa.sph.sh_rotation_matrix(ambisonics_order, yaw, 0.0, 0.0, sh_type='real').T  
             ambi_data_rot[i:i+frame_length,:] += (ambi_data[i:i+frame_length,:]*w) @ mtx                            
         
     # process the remaining samples       
@@ -284,3 +305,6 @@ for scene_idx in range(num_scenes):
     if keepHoaScenes == False:
         os.remove(destination_path+"/"+folder+".wav")
 print("## %s seconds - Overall ---" % (time.time() - start_overall_time))
+
+
+
