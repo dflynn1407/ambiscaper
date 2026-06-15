@@ -25,11 +25,12 @@ import tempfile
 import numpy as np
 import shutil
 import pandas as pd
+import json
 from .ambiscaper_exceptions import AmbiScaperError
 from .ambiscaper_warnings import AmbiScaperWarning
 from .util import _close_temp_files, spherical_to_cartesian, _validate_distribution, SUPPORTED_DIST, \
     _get_event_idx_from_id, _generate_event_id_from_idx, _get_sorted_audio_files_recursive, cartesian_to_spherical, \
-    find_closest_spherical_point, find_onset, find_offset, normalize_ir
+    find_closest_spherical_point, find_onset, find_offset, normalize_ir, evaluate_spatial_trajectory
 from .util import _set_temp_logging_level
 from .util import _get_sorted_files
 from .util import _validate_folder_path
@@ -535,6 +536,8 @@ def _validate_azimuth(azimuth_tuple):
             raise AmbiScaperError(
                 'A "truncnorm" distirbution tuple for azimuth must specify a '
                 'trunc_max value <= 2pi.')
+    elif azimuth_tuple[0] == "trajectory":
+        pass
 
 
 def _validate_elevation(elevation_tuple):
@@ -595,6 +598,8 @@ def _validate_elevation(elevation_tuple):
             raise AmbiScaperError(
                 'A "truncnorm" distirbution tuple for elevation must specify a '
                 'trunc_max value <= pi/2')
+    elif elevation_tuple[0] == "trajectory":
+        pass
 
 
 def _validate_spread(spread_tuple):
@@ -2706,38 +2711,58 @@ class AmbiScaper:
                                 fade_out_window = np.sin(np.linspace(np.pi / 2, 0, fade_out_samples))[..., None]
                                 event_audio[-fade_out_samples:] *= fade_out_window
 
-                            # Pad with silence before/after event to match the
-                            # soundscape duration
-                            prepad = int(self.sr * e.value['event_time'])
-                            postpad = max(0, duration_in_samples - (event_audio.shape[0] + prepad))
-                            event_audio = np.pad(event_audio, ((prepad, postpad), (0, 0)), 
-                                mode='constant', constant_values=(0, 0))                                                        
-                            event_audio_list.append(event_audio[:duration_in_samples])                            
-
-                            if save_isolated_events == True:
-                                preprocessed_files.append(os.path.join(destination_source_path, audio_event_filename))                            
-                                sf.write(preprocessed_files[-1], event_audio_list[-1], self.sr)
+                            # SPATIAL PROCESSING
                             if not annotation_reverb:
                                 # if foreground, apply both ambi coefs and spread
-                                input_volumes = get_ambisonics_coefs(e.value['event_azimuth'],
-                                                            e.value['event_elevation'],
-                                                            self.ambisonics_order)
-                                input_volumes *= get_ambisonics_spread_coefs(
+                                
+                                # evaluate trajectories (returns arrays of length duration_in_samples if trajectories)
+                                event_azimuth, event_elevation = evaluate_spatial_trajectory(
+                                    e.value['event_azimuth'],
+                                    e.value['event_elevation'],
+                                    event_audio.shape[0],
+                                    self.sr)
+
+                                input_volumes = get_ambisonics_coefs(event_azimuth,
+                                                                    event_elevation,
+                                                                    self.ambisonics_order)
+                                
+                                spread_coefs = get_ambisonics_spread_coefs(
                                     e.value['event_spread'],
                                     self.ambisonics_spread_slope,
                                     self.ambisonics_order)
                                 
-                                temp = event_audio_list[-1] * input_volumes
-                                mix += temp
-                                #processed_tmpfiles.append(
-                                #    tempfile.NamedTemporaryFile(
-                                #    suffix='.wav', delete=False))                                
-                                #sf.write(processed_tmpfiles[-1].name, temp, self.sr)                                
+                                if input_volumes.ndim > 1:
+                                    # input_volumes is (num_channels, N_samples)
+                                    # spread_coefs is (num_channels,)
+                                    input_volumes *= spread_coefs[:, np.newaxis]
+                                    event_audio_spatial = event_audio * input_volumes.T
+                                else:
+                                    input_volumes *= spread_coefs
+                                    event_audio_spatial = event_audio * input_volumes
                                 
                             else:
                                 print("Rerverb processing not implemented in new method yet.")
+                                event_audio_spatial = event_audio
                                                                                                     
-                    
+                            # Pad with silence before/after event to match the
+                            # soundscape duration
+                            prepad = int(self.sr * e.value['event_time'])
+                            
+                            # Pad mono event audio for isolation list
+                            postpad_mono = max(0, duration_in_samples - (event_audio.shape[0] + prepad))
+                            event_audio_padded = np.pad(event_audio, ((prepad, postpad_mono), (0, 0)), 
+                                mode='constant', constant_values=(0, 0))
+                            event_audio_list.append(event_audio_padded[:duration_in_samples])                            
+
+                            if save_isolated_events == True:
+                                preprocessed_files.append(os.path.join(destination_source_path, audio_event_filename))                            
+                                sf.write(preprocessed_files[-1], event_audio_list[-1], self.sr)
+
+                            # Pad spatialized audio and add to mix
+                            postpad_spatial = max(0, duration_in_samples - (event_audio_spatial.shape[0] + prepad))
+                            event_audio_spatial_padded = np.pad(event_audio_spatial, ((prepad, postpad_spatial), (0, 0)), 
+                                mode='constant', constant_values=(0, 0))
+                            mix += event_audio_spatial_padded[:duration_in_samples]
             
                 # Check for clipping and fix [optional]                
                 max_sample = np.max(np.abs(mix[:, 0])) # check W channel only
@@ -3213,6 +3238,55 @@ class AmbiScaper:
         # values of smir_reverb (t60 or reflectivity)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            def sanitize_recursive(obj):
+                if isinstance(obj, dict):
+                    return {k: sanitize_recursive(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [sanitize_recursive(v) for v in obj]
+                elif isinstance(obj, tuple):
+                    if len(obj) >= 3 and obj[0] == 'trajectory' and obj[1] == 'custom':
+                        func_name = obj[2].__name__ if hasattr(obj[2], '__name__') else str(obj[2])
+                        return (obj[0], obj[1], func_name)
+                    return tuple(sanitize_recursive(v) for v in obj)
+                elif hasattr(obj, '_asdict'):
+                    return sanitize_recursive(obj._asdict())
+                else:
+                    # if it's a callable, just stringify it
+                    if callable(obj):
+                        return getattr(obj, '__name__', str(obj))
+                    return obj
+
+            if hasattr(jam.sandbox, 'scaper'):
+                jam.sandbox.scaper.fg_spec = sanitize_recursive(jam.sandbox.scaper.fg_spec)
+                jam.sandbox.scaper.bg_spec = sanitize_recursive(jam.sandbox.scaper.bg_spec)
+            
+            # Since JAMS recreates __json__ from its attributes, we might need to recreate the observations.
+            for ann in jam.annotations:
+                if ann.namespace == 'ambiscaper_sound_event':
+                    new_data = []
+                    for obs in ann.data:
+                        sanitized_val = sanitize_recursive(obs.value)
+                        new_data.append(jams.Observation(time=obs.time, duration=obs.duration, value=sanitized_val, confidence=obs.confidence))
+                    ann.data = new_data
+                        
+            # Also clean bg_spec, fg_spec from sandbox if they exist as separate lists
+            if hasattr(jam.sandbox, 'bg_spec'):
+                jam.sandbox.bg_spec = sanitize_recursive(jam.sandbox.bg_spec)
+            if hasattr(jam.sandbox, 'fg_spec'):
+                jam.sandbox.fg_spec = sanitize_recursive(jam.sandbox.fg_spec)
+
+            for ann in jam.annotations:
+                if hasattr(ann.sandbox, 'scaper'):
+                    if hasattr(ann.sandbox.scaper, 'fg_spec'):
+                        ann.sandbox.scaper.fg_spec = sanitize_recursive(ann.sandbox.scaper.fg_spec)
+                    if hasattr(ann.sandbox.scaper, 'bg_spec'):
+                        ann.sandbox.scaper.bg_spec = sanitize_recursive(ann.sandbox.scaper.bg_spec)
+                if hasattr(ann.sandbox, 'ambiscaper'):
+                    if hasattr(ann.sandbox.ambiscaper, 'fg_spec'):
+                        ann.sandbox.ambiscaper.fg_spec = sanitize_recursive(ann.sandbox.ambiscaper.fg_spec)
+                    if hasattr(ann.sandbox.ambiscaper, 'bg_spec'):
+                        ann.sandbox.ambiscaper.bg_spec = sanitize_recursive(ann.sandbox.ambiscaper.bg_spec)
+
             jam.save(os.path.join(destination_path, filename + '.jams'),strict=False)
 
         # Optionally save to CSV as well
@@ -3228,12 +3302,11 @@ class AmbiScaper:
                                obs.time + obs.duration,
                                name])
                     df.loc[len(df)] = newrow
-
             # sort events by onset time
             df = df.sort_values('onset')
             df.reset_index(inplace=True, drop=True)
-            df.to_csv(os.path.join(destination_path, txt_path),
+            df.to_csv(txt_path,
                       index=False,
-                      header=False,
-                      sep=txt_sep)
+                      sep='\t',
+                      header=False)
 

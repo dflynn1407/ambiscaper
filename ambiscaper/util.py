@@ -435,16 +435,14 @@ def cartesian_to_spherical(cartesian_list):
     :raises: AmbiScaperError. If the input argument does not match the required type
     '''
 
+    # Both arguments should be lists of 3 floats
     def _validate_args(list_arg):
         if not isinstance(list_arg,list) and not isinstance(list_arg,np.ndarray):
             raise AmbiScaperError(
                 'Error on Cartesian to Spherical conversion: argument not a list, given ' + str(type(list_arg)) + str(list_arg))
         if len(list_arg) != 3:
             raise AmbiScaperError(
-                'Error on Cartesian to Spherical conversion: argument should have lenght of 3, given' + str(list_arg))
-        if not any([isinstance(f,float) for f in list_arg]):
-            raise AmbiScaperError(
-                'Error on Cartesian to Spherical conversion: argument should contain floats, given' + str(list_arg))
+                'Error on Cartesian to Spherical conversion: argument should have length 3, given ' + str(list_arg))
 
     _validate_args(cartesian_list)
 
@@ -455,7 +453,14 @@ def cartesian_to_spherical(cartesian_list):
 
     r = np.sqrt((x*x)+(y*y)+(z*z))
     azimuth = np.arctan2(y,x)
-    elevation = np.arcsin(z / r) if r != 0 else 0
+    
+    # Vectorized elevation calculation
+    if isinstance(r, np.ndarray):
+        elevation = np.zeros_like(r)
+        nonzero = (r != 0)
+        elevation[nonzero] = np.arcsin(z[nonzero] / r[nonzero])
+    else:
+        elevation = np.arcsin(z / r) if r != 0 else 0
 
     return [azimuth,elevation,r]
 
@@ -525,10 +530,7 @@ def spherical_to_cartesian(spherical_list):
                 'Error on Spherical to Cartesian conversion: argument not a list, given ' + str(type(list_arg)) + str(list_arg))
         if len(list_arg) != 3:
             raise AmbiScaperError(
-                'Error on Spherical to Cartesian conversion: argument should have lenght of 3, given ' + str(list_arg))
-        if not any([isinstance(f,float) for f in list_arg]):
-            raise AmbiScaperError(
-                'Error on Spherical to Cartesian conversion: argument should contain floats, given ' + str(list_arg))
+                'Error on Spherical to Cartesian conversion: argument should have length 3, given ' + str(list_arg))
 
     _validate_args(spherical_list)
 
@@ -770,7 +772,8 @@ SUPPORTED_DIST = {"const": lambda x: x,
                   "choose": lambda x: np.random.choice(x),
                   "uniform": random.uniform,
                   "normal": random.normalvariate,
-                  "truncnorm": _trunc_norm}
+                  "truncnorm": _trunc_norm,
+                  "trajectory": lambda *args: ("trajectory", *args)}
 
 def _validate_distribution(dist_tuple):
     '''
@@ -852,6 +855,28 @@ def _validate_distribution(dist_tuple):
                 '(std dev) is real and non-negative, the 4th item (trunc_min) '
                 'is a real number and the 5th item (trun_max) is a real '
                 'number that is equal to or greater than trunc_min.')
+    elif dist_tuple[0] == 'trajectory':
+        if len(dist_tuple) < 3:
+            raise AmbiScaperError(
+                'The "trajectory" distribution tuple must be at least of length 3.')
+        if dist_tuple[1] == 'linear':
+            if len(dist_tuple) != 4 or not is_real_number(dist_tuple[2]) or not is_real_number(dist_tuple[3]):
+                raise AmbiScaperError(
+                    'The "linear" trajectory distribution must be of length 4 '
+                    'with start and end as real numbers.')
+        elif dist_tuple[1] == 'waypoints':
+            if len(dist_tuple) != 3 or not isinstance(dist_tuple[2], (list, np.ndarray)) or len(dist_tuple[2]) < 2:
+                raise AmbiScaperError(
+                    'The "waypoints" trajectory distribution must be of length 3 '
+                    'where the 3rd item is a list/array of at least 2 waypoints.')
+        elif dist_tuple[1] == 'custom':
+            if len(dist_tuple) != 3 or not callable(dist_tuple[2]):
+                raise AmbiScaperError(
+                    'The "custom" trajectory distribution must be of length 3 '
+                    'where the 3rd item is a callable.')
+        else:
+             raise AmbiScaperError(
+                f'Unsupported trajectory subtype: {dist_tuple[1]:s}')
 
 
 
@@ -924,3 +949,96 @@ def normalize_ir(signal, max=1):
     peak_value = np.amax(np.absolute(signal))
     k = max / peak_value
     return signal*k
+def evaluate_spatial_trajectory(az_val, el_val, duration_in_samples, sr):
+    '''
+    Evaluate azimuth and elevation trajectories jointly in Cartesian space.
+    Shortest-path interpolation is guaranteed by interpolating in Cartesian
+    coordinates and then normalizing back to a constant radius.
+
+    Parameters
+    ----------
+    az_val : float or tuple
+        Azimuth value or trajectory tuple.
+    el_val : float or tuple
+        Elevation value or trajectory tuple.
+    duration_in_samples : int
+        Number of samples for the output arrays.
+    sr : int
+        Sampling rate.
+
+    Returns
+    -------
+    az_array : np.ndarray
+        Azimuth array of length duration_in_samples.
+    el_array : np.ndarray
+        Elevation array of length duration_in_samples.
+    '''
+    is_az_traj = isinstance(az_val, tuple) and az_val[0] == 'trajectory'
+    is_el_traj = isinstance(el_val, tuple) and el_val[0] == 'trajectory'
+
+    if not is_az_traj and not is_el_traj:
+        return az_val, el_val
+
+    t = np.linspace(0, duration_in_samples / sr, duration_in_samples)
+
+    # Helper to evaluate a single parameter (not shortest-path aware)
+    def eval_single(val):
+        if isinstance(val, tuple) and val[0] == 'trajectory':
+            if val[1] == 'linear':
+                return np.linspace(val[2], val[3], duration_in_samples)
+            elif val[1] == 'waypoints':
+                t_w = np.linspace(0, duration_in_samples / sr, len(val[2]))
+                return np.interp(t, t_w, val[2])
+            elif val[1] == 'custom':
+                return val[2](t)
+        return np.full(duration_in_samples, val)
+
+    # Handle custom trajectories: evaluate independently
+    if (is_az_traj and az_val[1] == 'custom') or (is_el_traj and el_val[1] == 'custom'):
+        return eval_single(az_val), eval_single(el_val)
+
+    # Built-in trajectories: linear or waypoints -> Joint Cartesian Interpolation
+    def get_waypoints(val):
+        if isinstance(val, tuple) and val[0] == 'trajectory':
+            if val[1] == 'linear':
+                return [val[2], val[3]]
+            elif val[1] == 'waypoints':
+                return list(val[2])
+        return [val]
+
+    az_waypoints = get_waypoints(az_val)
+    el_waypoints = get_waypoints(el_val)
+
+    # Match waypoint counts by repeating the shorter one
+    max_w = max(len(az_waypoints), len(el_waypoints))
+    if len(az_waypoints) == 1:
+        az_waypoints = az_waypoints * max_w
+    if len(el_waypoints) == 1:
+        el_waypoints = el_waypoints * max_w
+    
+    # Convert waypoints to Cartesian
+    x_w, y_w, z_w = [], [], []
+    for azi, ele in zip(az_waypoints, el_waypoints):
+        # We use a constant radius of 1.0 for interpolation on the unit sphere
+        cart = spherical_to_cartesian([azi, ele, 1.0])
+        x_w.append(cart[0])
+        y_w.append(cart[1])
+        z_w.append(cart[2])
+
+    # Interpolate Cartesian coordinates
+    t_w = np.linspace(0, duration_in_samples / sr, len(az_waypoints))
+    x_t = np.interp(t, t_w, x_w)
+    y_t = np.interp(t, t_w, y_w)
+    z_t = np.interp(t, t_w, z_w)
+
+    # Normalize to ensure we stay on the unit sphere (great-circle path)
+    r_t = np.sqrt(x_t**2 + y_t**2 + z_t**2)
+    # Avoid division by zero
+    r_t[r_t == 0] = 1.0
+    x_t /= r_t
+    y_t /= r_t
+    z_t /= r_t
+
+    # Convert back to spherical
+    sph = cartesian_to_spherical([x_t, y_t, z_t])
+    return sph[0], sph[1]

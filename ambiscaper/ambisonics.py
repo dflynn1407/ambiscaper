@@ -14,6 +14,7 @@ elevation [-pi/2..pi/2]
 
 '''
 import numpy as np
+from numbers import Number
 from numpy import pi
 from math import sin, cos, sqrt, factorial, exp
 from ambiscaper.ambiscaper_exceptions import AmbiScaperError
@@ -44,9 +45,9 @@ def _validate_ambisonics_degree(degree, order):
 
 
 def _validate_ambisonics_angle(angle):
-    if (not is_real_number(angle)):
+    if not isinstance(angle, (Number, np.ndarray)):
             raise AmbiScaperError(
-                'Ambisonics angle must be a number')
+                'Ambisonics angle must be a number or numpy array')
 
 
 def _validate_spread_coef(alpha):
@@ -84,7 +85,7 @@ def get_ambisonics_coefs(azimuth,elevation,order):
     _validate_ambisonics_angle(azimuth)
     _validate_ambisonics_angle(elevation)
     _validate_ambisonics_order(order)
-
+    
     coefs = []
     coef_index = 0
     for l in range(order+1):
@@ -160,13 +161,13 @@ def get_real_spherical_harmonic(azimuth, elevation, ambisonics_order, ambisonics
     # NOTE THAT EVERYTHING IS CHANGED RESPECT TO THE MAN ENTRY
     # here, we use phi as azimuth and theta as elevation
     # furthermore, L is ambisonics order and M is ambisonics degree
-    return np.real(sph_harm(ambisonics_degree,ambisonics_order,azimuth,elevation)).item()
+    return np.real(sph_harm(ambisonics_degree,ambisonics_order,azimuth,elevation))
 
 def get_imag_spherical_harmonic(azimuth, elevation, ambisonics_order, ambisonics_degree):
     # NOTE THAT EVERYTHING IS CHANGED RESPECT TO THE MAN ENTRY
     # here, we use phi as azimuth and theta as elevation
     # furthermore, L is ambisonics order and M is ambisonics degree
-    return np.imag(sph_harm(ambisonics_degree,ambisonics_order,azimuth,elevation)).item()
+    return np.imag(sph_harm(ambisonics_degree,ambisonics_order,azimuth,elevation))
 
 # eq 16
 def get_ambisonics_spread_coefs(alpha, tau, max_ambisonics_order):
