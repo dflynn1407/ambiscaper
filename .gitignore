@@ -9,3 +9,7 @@ dist/*
 docs/_build/*
 scaper/bin/*
 docs_old/*
+output/
+samples/**/*.wav
+*.egg-info/
+.vscode/
