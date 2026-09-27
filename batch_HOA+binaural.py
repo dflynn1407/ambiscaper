@@ -86,15 +86,15 @@ symVec = [1,
          -1,-1,-1,-1, 1, 1, 1, 1, 1,
          -1,-1,-1,-1,-1, 1, 1, 1, 1, 1, 1]   
 
-# get ht_data from ht-captures folder
-ht_path = os.path.join(os. getcwd(), '../resources/ht-captures/')
-ht_data_name = []
-for item in os.listdir(ht_path):
-    if os.path.splitext(item)[1] == '.flac':
-        ht_data_name.append(item)
-# for head-tracking based soundfield rotation 
-frame_length = 512
-hopsize = int(frame_length/2)
+# # get ht_data from ht-captures folder
+# ht_path = os.path.join(os. getcwd(), '../resources/ht-captures/')
+# ht_data_name = []
+# for item in os.listdir(ht_path):
+#     if os.path.splitext(item)[1] == '.flac':
+#         ht_data_name.append(item)
+# # for head-tracking based soundfield rotation 
+# frame_length = 512
+# hopsize = int(frame_length/2)
 
 
 
@@ -191,24 +191,24 @@ for scene_idx in range(num_scenes):
         output_signal[:, :2] /= (maxVal_output * 1.02)
     sf.write(outfolderBin+"/"+folder+"_horizontalOnly_rot_0_binaural.flac", output_signal, ambi_sample_rate)#, subtype="PCM_24"subtype='FLOAT')
     
-    selected_ht_filename = choice(ht_data_name)
-    # print('selected headtracker file is: ', selected_ht_filename)
-    ht_filename = os.path.join(ht_path, selected_ht_filename)
-    ht_info = sf.info(ht_filename)
-    ht_data_selected_time = max(0, int((ht_info.duration-soundscape_duration) * ht_info.samplerate))
-    start_frame = int(random.randint(0, ht_data_selected_time))
-    stop_frame = int(start_frame + ht_info.samplerate * soundscape_duration)  # stop_frame has a fixed length, i.e. time of start_frame + time of soundscape    
-    ht_data_trunc, ht_samplerate = sf.read(ht_filename, start=start_frame, stop=stop_frame)
+    # selected_ht_filename = choice(ht_data_name)
+    # # print('selected headtracker file is: ', selected_ht_filename)
+    # ht_filename = os.path.join(ht_path, selected_ht_filename)
+    # ht_info = sf.info(ht_filename)
+    # ht_data_selected_time = max(0, int((ht_info.duration-soundscape_duration) * ht_info.samplerate))
+    # start_frame = int(random.randint(0, ht_data_selected_time))
+    # stop_frame = int(start_frame + ht_info.samplerate * soundscape_duration)  # stop_frame has a fixed length, i.e. time of start_frame + time of soundscape    
+    # ht_data_trunc, ht_samplerate = sf.read(ht_filename, start=start_frame, stop=stop_frame)
 
     # generate two binary flags in order to control the time reverse and phase flipping
     binary_flag = random.randint(0, 1)
     binary_flag2 = random.randint(0, 1)
-    if binary_flag == 1:  # time reverse
-        #print('time reverse ht data')
-        ht_data_trunc = np.flipud(ht_data_trunc)    
-    if binary_flag2 == 1:  # phase flipping
-        #print('inverting direction of ht data')
-        ht_data_trunc = -ht_data_trunc
+    # if binary_flag == 1:  # time reverse
+    #     #print('time reverse ht data')
+    #     ht_data_trunc = np.flipud(ht_data_trunc)    
+    # if binary_flag2 == 1:  # phase flipping
+    #     #print('inverting direction of ht data')
+    #     ht_data_trunc = -ht_data_trunc
     #else:
     #    print('phase flipping does not occur')
 
